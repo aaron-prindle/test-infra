@@ -223,9 +223,6 @@ EOF
 
 # run e2es with ginkgo-e2e.sh
 run_tests() {
-  # Change to the cloned Kubernetes repository
-  pushd ../kubernetes
-
   # IPv6 clusters need some CoreDNS changes in order to work in k8s CI:
   # 1. k8s CI doesn´t offer IPv6 connectivity, so CoreDNS should be configured
   # to work in an offline environment:
@@ -286,17 +283,21 @@ run_tests() {
     "--report-dir=${ARTIFACTS}" '--disable-log-dump=true' &
   GINKGO_PID=$!
   wait "$GINKGO_PID"
-
-  # Return to the original directory
-  popd
 }
 
-# clone kubernetes repo for specific release branch
-clone_kubernetes_release() {
-  # Clone the specific Kubernetes release branch
-  # Replace "release-1.31" with the desired branch
-  KUBE_RELEASE_BRANCH=${KUBE_RELEASE_BRANCH:-release-1.31}
-  git clone --single-branch --branch "${KUBE_RELEASE_BRANCH}" https://github.com/kubernetes/kubernetes.git
+get_latest_release_branch() {
+    # Fetch all branch names
+    git ls-remote --heads https://github.com/kubernetes/kubernetes.git | \
+    # Extract branch names that match release-X.Y pattern
+    grep -o 'refs/heads/release-[0-9]\+\.[0-9]\+$' | \
+    # Extract just the version numbers
+    sed 's/refs\/heads\/release-//' | \
+    # Sort versions numerically
+    sort -t. -k1,1n -k2,2n | \
+    # Get the last (highest) version
+    tail -n1 | \
+    # Add the release- prefix back
+    sed 's/^/release-/'
 }
 
 main() {
@@ -327,10 +328,16 @@ main() {
   res=0
   create_cluster || res=$?
 
-  # Clone the specific Kubernetes release branch
-  clone_kubernetes_release
+  # Clone the previous versions Kubernetes release branch
+  # TODO(aaron-prindle) extend the branches to test from n-1 -> n-1..3 as more k8s releases are done that support compatibility versions
+  export PREV_RELEASE_BRANCH=$(get_latest_release_branch)
+  git clone --single-branch --branch "${PREV_RELEASE_BRANCH}" https://github.com/kubernetes/kubernetes.git "${PREV_RELEASE_BRANCH}"
 
+  # enter the release branch and run tests
+  pushd "${PREV_RELEASE_BRANCH}"
   run_tests || res=$?
+  popd
+
   cleanup || res=$?
   exit $res
 }
