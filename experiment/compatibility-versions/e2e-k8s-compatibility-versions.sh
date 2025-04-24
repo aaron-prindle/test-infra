@@ -68,12 +68,10 @@ signal_handler() {
 }
 trap signal_handler INT TERM
 
-# build kubectl, kubernetes e2e test binaries, and ginkgo
-build() {
-  GINKGO_SRC_DIR="vendor/github.com/onsi/ginkgo/v2/ginkgo"
-
+# build kubectl
+build_kubectl() {
   # make sure we have e2e requirements
-  make all WHAT="cmd/kubectl test/e2e/e2e.test ${GINKGO_SRC_DIR}"
+  make all WHAT="cmd/kubectl"
 
   # Ensure the built kubectl is used instead of system
   export PATH="${PWD}/_output/bin:$PATH"
@@ -243,6 +241,25 @@ EOF
     --type='json' -p='[{"op": "add", "path": "/spec/template/spec/containers/0/command/-", "value": "--v='"${KIND_CLUSTER_LOG_LEVEL}"'" }]'
 }
 
+build_tests() {
+  echo "Building e2e.test binary from release branch ${PREV_RELEASE_BRANCH}..."
+  # Ensure the e2e test binary is built from the *current* (previous release) checkout
+  if ! make all WHAT="test/e2e/e2e.test vendor/github.com/onsi/ginkgo/v2/ginkgo"; then
+      echo "WARN: 'make all WHAT=...' failed, attempting older 'make WHAT=test/e2e/e2e.test'..."
+      # Fallback for older branches that might not have the combined target or ginkgo vendored the same way
+      make WHAT="test/e2e/e2e.test"
+      # Attempt to build ginkgo separately if the combined target failed
+      if [[ -d "vendor/github.com/onsi/ginkgo/v2/ginkgo" ]]; then
+          make WHAT="vendor/github.com/onsi/ginkgo/v2/ginkgo" || echo "WARN: Failed to build ginkgo separately."
+      fi
+  fi
+  # Ensure the *locally built* ginkgo is used if available/built, overriding any PATH version
+  if [[ -x "_output/bin/ginkgo" ]]; then
+    export PATH="${PWD}/_output/bin:$PATH"
+  fi
+  echo "Finished building e2e.test binary from ${PREV_RELEASE_BRANCH}."
+}
+
 # run e2es with ginkgo-e2e.sh
 run_tests() {
   # IPv6 clusters need some CoreDNS changes in order to work in k8s CI:
@@ -376,8 +393,8 @@ main() {
   # debug kind version
   kind version
 
-  # build kubernetes (for upgrade)
-  build
+  # build kubectl (for upgrade)
+  build_kubectl
   # in CI attempt to release some memory after building
   if [ -n "${KUBETEST_IN_DOCKER:-}" ]; then
     sync || true
@@ -404,6 +421,7 @@ main() {
 
   # enter the cloned prev repo branch (in temp) and run tests
   pushd "${PREV_RELEASE_REPO_PATH}"
+  build_tests || res=$?
   run_tests || res=$?
   popd
 
