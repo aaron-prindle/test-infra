@@ -68,15 +68,6 @@ signal_handler() {
 }
 trap signal_handler INT TERM
 
-# build kubectl
-build_kubectl() {
-  # make sure we have e2e requirements
-  make all WHAT="cmd/kubectl"
-
-  # Ensure the built kubectl is used instead of system
-  export PATH="${PWD}/_output/bin:$PATH"
-}
-
 check_structured_log_support() {
 	case "${KUBE_VERSION}" in
 		v1.1[0-8].*)
@@ -241,27 +232,19 @@ EOF
     --type='json' -p='[{"op": "add", "path": "/spec/template/spec/containers/0/command/-", "value": "--v='"${KIND_CLUSTER_LOG_LEVEL}"'" }]'
 }
 
-build_tests() {
+build_prev_version_bins() {
+  GINKGO_SRC_DIR="vendor/github.com/onsi/ginkgo/v2/ginkgo"
+
   echo "Building e2e.test binary from release branch ${PREV_RELEASE_BRANCH}..."
-  # Ensure the e2e test binary is built from the *current* (previous release) checkout
-  if ! make all WHAT="test/e2e/e2e.test vendor/github.com/onsi/ginkgo/v2/ginkgo"; then
-      echo "WARN: 'make all WHAT=...' failed, attempting older 'make WHAT=test/e2e/e2e.test'..."
-      # Fallback for older branches that might not have the combined target or ginkgo vendored the same way
-      make WHAT="test/e2e/e2e.test"
-      # Attempt to build ginkgo separately if the combined target failed
-      if [[ -d "vendor/github.com/onsi/ginkgo/v2/ginkgo" ]]; then
-          make WHAT="vendor/github.com/onsi/ginkgo/v2/ginkgo" || echo "WARN: Failed to build ginkgo separately."
-      fi
-  fi
-  # Ensure the *locally built* ginkgo is used if available/built, overriding any PATH version
-  if [[ -x "_output/bin/ginkgo" ]]; then
-    export PATH="${PWD}/_output/bin:$PATH"
-  fi
+  make all WHAT="cmd/kubectl test/e2e/e2e.test ${GINKGO_SRC_DIR}"
+
+  # Ensure the built kubectl is used instead of system
+  export PATH="${PWD}/_output/bin:$PATH"
   echo "Finished building e2e.test binary from ${PREV_RELEASE_BRANCH}."
 }
 
 # run e2es with ginkgo-e2e.sh
-run_tests() {
+run_prev_version_tests() {
   # IPv6 clusters need some CoreDNS changes in order to work in k8s CI:
   # 1. k8s CI doesn´t offer IPv6 connectivity, so CoreDNS should be configured
   # to work in an offline environment:
@@ -368,19 +351,20 @@ main() {
   mkdir -p "${ARTIFACTS}"
 
   GIT_VERSION=$(echo "${WORKSPACE_STATUS}" | awk '/^gitVersion/ {print $2}')
-  # Check if gitVersion contains alpha.0 and increment VERSION_DELTA if needed
-  # If the current version is alpha.0, it means the previous *stable* or developed
-  # branch is actually n-2 relative to the current minor number for compatibility purposes.
-  if [[ "${GIT_VERSION}" == *alpha.0 ]]; then
-    echo "Detected alpha.0 in gitVersion (${GIT_VERSION}), treating as still the previous minor version."
-    VERSION_DELTA=$((VERSION_DELTA + 1))
-    echo "Adjusted VERSION_DELTA: ${VERSION_DELTA}"
-  fi
 
   # Get current and n-1 version numbers
   MAJOR_VERSION=$(./hack/print-workspace-status.sh | awk '/STABLE_BUILD_MAJOR_VERSION/ {print $2}')
   MINOR_VERSION=$(./hack/print-workspace-status.sh | awk '/STABLE_BUILD_MINOR_VERSION/ {split($2, minor, "+"); print minor[1]}')
   export VERSION_DELTA=${VERSION_DELTA:-1}
+    # Check if gitVersion contains alpha.0 and increment VERSION_DELTA if needed
+  # If the current version is alpha.0, it means the previous *stable* or developed
+  # branch is actually n-2 relative to the current minor number for compatibility purposes.
+  if [[ "${GIT_VERSION}" == *alpha.0 ]]; then
+    echo "Detected alpha.0 in gitVersion (${GIT_VERSION}), treating as still the previous minor version."
+    MAJOR_VERSION=$((MAJOR_VERSION - 1))
+    echo "Adjusted MAJOR_VERSION: ${MAJOR_VERSION}"
+  fi
+
   export CURRENT_VERSION="${MAJOR_VERSION}.${MINOR_VERSION}"
   export PREV_VERSION="${MAJOR_VERSION}.$((MINOR_VERSION - VERSION_DELTA))"
   export EMULATED_VERSION="${PREV_VERSION}"
@@ -421,8 +405,8 @@ main() {
 
   # enter the cloned prev repo branch (in temp) and run tests
   pushd "${PREV_RELEASE_REPO_PATH}"
-  build_tests || res=$?
-  run_tests || res=$?
+  build_prev_version_bins || res=$?
+  run_prev_version_tests || res=$?
   popd
 
 
